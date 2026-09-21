@@ -1,0 +1,50 @@
+name: Keepalive
+
+on:
+  schedule:
+    # 1st of every month, 04:00 UTC (09:30 IST).
+    #
+    # GitHub disables ALL scheduled workflows in a repo after 60 days of
+    # repository inactivity. The watcher deliberately does not commit on
+    # routine "not open" checks, so without this the repo goes quiet and the
+    # watcher is silently switched off ~2 months after the last human commit —
+    # which would have landed right before the registration window.
+    #
+    # Monthly gives ~2 missed runs of headroom before the 60-day limit.
+    - cron: "0 4 1 * *"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: iism-keepalive
+  cancel-in-progress: false
+
+jobs:
+  keepalive:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Commit heartbeat
+        run: |
+          date -u +"%Y-%m-%dT%H:%M:%SZ  keepalive" >> HEARTBEAT
+          git config user.name "iism-watch-bot"
+          git config user.email "bot@users.noreply.github.com"
+          git add HEARTBEAT
+          git commit -m "chore: monthly keepalive heartbeat"
+          git push
+
+      - name: Monthly liveness ping to Telegram
+        env:
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+        run: |
+          # Deliberate: this monthly ping is the failsafe. If the keepalive ever
+          # stops working, the group simply stops hearing from the bot — silence
+          # is the signal that something needs a look.
+          curl -sS -X POST "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendMessage" \
+            --data-urlencode "chat_id=${TELEGRAM_CHAT_ID}" \
+            --data-urlencode "text=🫀 IISM Gulmarg snow-skiing 2027 watcher — monthly liveness check. Watcher is alive and its scheduled runs are firing. If this message ever stops showing up, the watcher needs a look." \
+            -o /dev/null -w "telegram sendMessage: HTTP %{http_code}\n"
