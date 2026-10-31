@@ -25,7 +25,9 @@ jobs:
           elif [ "$MINS" -le 30 ];   then MSG="🚨 T-${MINS} MINUTES to IISM booking. Start the pouncer NOW:  sh ~/iism/fill_ego.sh --pounce"
           elif [ "$MINS" -le 90 ];   then MSG="⏰ T-1 hour to IISM booking (12 Nov, 10:00 IST). Be at the Mac. ego lite open. Card ready for ₹20,000."
           elif [ "$MINS" -le 1500 ]; then MSG="📅 IISM booking opens TOMORROW, 12 Nov at 10:00 IST. Batch 1 (20 Dec – 2 Jan). Do a practice run today:  sh ~/iism/fill_ego.sh --rehearse"
-          else MSG="📅 IISM Gulmarg booking opens in 3 days — 12 Nov, 10:00 IST. Batch 1 (20 Dec – 2 Jan), fee ₹20,000. Everything is prepped; do a rehearsal if you want to see it work."
+          else
+            DAYS=$(( MINS / 1440 ))
+            MSG="📅 IISM Gulmarg booking opens in ${DAYS} day(s) — 12 Nov, 10:00 IST. Batch 1 (20 Dec – 2 Jan), fee ₹20,000. Everything is prepped; do a rehearsal if you want to see it work:  sh ~/iism/fill_ego.sh --rehearse"
           fi
           curl -sS -X POST "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendMessage" \
             --data-urlencode "chat_id=${TELEGRAM_CHAT_ID}" \
