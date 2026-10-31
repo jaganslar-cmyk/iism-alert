@@ -33,7 +33,16 @@ import requests
 HERE = Path(__file__).resolve().parent
 STATE_FILE = HERE / "state.json"
 
-COURSE_URL = "https://www.iismgulmarg.in/course_Schedule"
+# NOTE: IISM rebuilt the site as static .html pages around 12-15 Oct 2026; the
+# old extensionless /course_Schedule path began returning 404 and the watcher
+# went blind for ~17 days. Keep a fallback list so a single rename cannot blind
+# us again, and FAIL LOUDLY (see check_open) when none of them resolve.
+COURSE_URLS = [
+    "https://www.iismgulmarg.in/Course_Schedule.html",
+    "https://www.iismgulmarg.in/course_Schedule-2.html",
+    "https://www.iismgulmarg.in/course_Schedule",
+]
+COURSE_URL = COURSE_URLS[0]
 REQUEST_TIMEOUT = 25
 USER_AGENT = (
     "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 "
@@ -42,6 +51,11 @@ USER_AGENT = (
 
 # A snow-skiing course row: name mentions ski/snowboard but NOT water.
 SKI_RE = re.compile(r"ski|snowboard", re.IGNORECASE)
+# Page-level proof that the WINTER schedule is published. The 2026-27 rebuild
+# puts the discipline in section headings ("SNOW SKIING COURSES AT GULMARG"),
+# not in a per-row course-name cell.
+SNOW_HEADING_RE = re.compile(
+    r"snow\s*ski|snow\s*board|snowboard", re.IGNORECASE)
 WATER_RE = re.compile(r"water", re.IGNORECASE)
 # Winter timing confidence: a date in Nov/Dec or Jan–Mar, or the year 2027.
 WINTER_RE = re.compile(
@@ -66,6 +80,10 @@ def fetch(url: str) -> str | None:
     if r.status_code != 200:
         print(f"HTTP {r.status_code} for {url}")
         return None
+    # No charset header on these pages: requests would default to latin-1 and
+    # mangle the rupee sign. apparent_encoding sniffs the real one (utf-8).
+    if not r.encoding or r.encoding.lower() == "iso-8859-1":
+        r.encoding = r.apparent_encoding or "utf-8"
     return r.text
 
 
@@ -102,24 +120,54 @@ def parse_courses(raw: str) -> list[dict]:
 
 def find_booking_banner(raw: str) -> str | None:
     text = _clean(re.sub(r"<(script|style).*?</\1>", " ", raw, flags=re.S | re.I))
-    m = re.search(
+    patterns = [
+        # 2026-27 wording: "BOOKING DATE: 12 TH NOVEMBER 2026 AT 10:00 HRS"
+        r"(booking\s+date\s*:?\s*\d{1,2}\s*(?:st|nd|rd|th)?\s+"
+        r"[a-z]+\s+\d{4}(?:\s+at\s+\d{1,2}[:.]\d{2}\s*(?:hrs|hours|[ap]m)?)?)",
+        # Older wording: "Bookings will open ... 14/11/2026 at 10:00 AM"
         r"(bookings?\s+will\s+open[^<]{0,80}?"
         r"\d{1,2}[/.\-]\d{1,2}[/.\-]\d{2,4}"
         r"(?:[^<]{0,25}?\d{1,2}:\d{2}\s*[AP]M)?)",
-        text,
-        re.IGNORECASE,
-    )
-    return m.group(1).strip() if m else None
+        # Generic catch-all: any "booking ... <date>" phrasing.
+        r"(booking[^<]{0,40}?\d{1,2}\s*(?:st|nd|rd|th)?\s+[a-z]+\s+20\d{2})",
+    ]
+    for pat in patterns:
+        m = re.search(pat, text, re.IGNORECASE)
+        if m:
+            return re.sub(r"\s+", " ", m.group(1)).strip()
+    return None
 
 
 # --------------------------------------------------------------------------- #
 # Detection
 # --------------------------------------------------------------------------- #
 
+class ScheduleUnavailable(RuntimeError):
+    """Every known schedule URL failed. This is an ERROR, never a 'not open'."""
+
+
+def fetch_schedule() -> tuple[str, str]:
+    """Return (url, html) for the first schedule URL that responds, else raise.
+
+    Raising is deliberate. The previous version returned None here and the
+    caller mapped that to "registration not open yet", so when IISM renamed the
+    page the workflow stayed green while seeing nothing for ~17 days - straight
+    through the window in which the winter schedule was actually published.
+    A blind watcher must look broken, not idle.
+    """
+    problems = []
+    for url in COURSE_URLS:
+        raw = fetch(url)
+        if raw is not None:
+            return url, raw
+        problems.append(url)
+    raise ScheduleUnavailable(
+        "none of the known schedule URLs could be fetched: " + ", ".join(problems))
+
+
 def check_open() -> tuple[bool, str, list[dict], str | None]:
-    raw = fetch(COURSE_URL)
-    if raw is None:
-        return False, "could not fetch schedule page", [], None
+    url, raw = fetch_schedule()
+    page_text = _clean(re.sub(r"<(script|style).*?</\1>", " ", raw, flags=re.S | re.I))
 
     courses = parse_courses(raw)
     ski_rows = [
@@ -137,14 +185,29 @@ def check_open() -> tuple[bool, str, list[dict], str | None]:
         ]
 
     banner = find_booking_banner(raw)
-    is_open = bool(ski_rows)
+
+    # 2026-27 layout: the discipline lives in a section heading rather than a
+    # per-row cell, so a page-level snow-ski heading counts as published. Only
+    # the batch rows (which carry winter dates) are reported as detail.
+    heading_hit = bool(SNOW_HEADING_RE.search(page_text))
+    if heading_hit and not ski_rows:
+        ski_rows = [
+            c for c in courses
+            if WINTER_RE.search(c["row_text"])
+            and not WATER_RE.search(c["row_text"])
+            and not re.search(r"rafting|trek|mountaineer", c["row_text"], re.I)
+        ]
+
+    is_open = bool(ski_rows) or heading_hit
 
     listed = "; ".join(c["name"] for c in courses) or "no courses parsed"
     if is_open:
         found = "; ".join(c["name"] for c in ski_rows)
-        evidence = f"SNOW-SKI course(s) listed: {found}  |  banner: {banner or '-'}"
+        evidence = (f"SNOW-SKI schedule PUBLISHED [{url}]: {found}"
+                    f"  |  banner: {banner or '-'}")
     else:
-        evidence = f"no snow-ski course yet. Currently listed: {listed}  |  banner: {banner or '-'}"
+        evidence = (f"no snow-ski course yet [{url}]. Currently listed: {listed}"
+                    f"  |  banner: {banner or '-'}")
     return is_open, evidence, ski_rows, banner
 
 
@@ -215,7 +278,25 @@ def main() -> int:
         print(f"[{now}] Already notified — nothing to do.")
         return 0
 
-    is_open, evidence, ski_rows, banner = check_open()
+    try:
+        is_open, evidence, ski_rows, banner = check_open()
+    except ScheduleUnavailable as e:
+        # Loud failure: red workflow + one group warning (rate-limited by state)
+        # so nobody mistakes a broken watcher for a quiet one.
+        print(f"[{now}] WATCHER BLIND: {e}", file=sys.stderr)
+        if not dry_run and not state.get("blind_notified"):
+            send_telegram(
+                "\u26a0\ufe0f IISM watcher problem: the course-schedule page "
+                "can't be fetched from any known URL, so the watcher is "
+                "currently BLIND and cannot detect the booking opening.\n\n"
+                f"Tried: {', '.join(COURSE_URLS)}\n\n"
+                "Check the site for a renamed page.")
+            state["blind_notified"] = now
+            save_state(state)
+        return 2
+    # Recovered from a previous blind spell - allow a future warning again.
+    if state.pop("blind_notified", None) and not dry_run:
+        save_state(state)
     print(f"[{now}] {evidence}")
 
     if not is_open and not force_test:
