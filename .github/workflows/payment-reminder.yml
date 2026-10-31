@@ -1,0 +1,33 @@
+name: IISM payment reminder
+
+on:
+  schedule:
+    # Booking is 12 Nov 10:00 IST. The seat is won at SUBMISSION; the payment
+    # link is emailed afterwards with roughly a 24h window. The real risk is
+    # forgetting once the adrenaline wears off, so nag across that window.
+    - cron: "30 7 12 11 *"   # 12 Nov 13:00 IST  (~3h after open)
+    - cron: "30 14 12 11 *"  # 12 Nov 20:00 IST  (~10h)
+    - cron: "30 2 13 11 *"   # 13 Nov 08:00 IST  (~22h - last call)
+  workflow_dispatch:
+
+jobs:
+  remind:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Payment nag
+        env:
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+        run: |
+          NOW=$(date -u +%s)
+          OPEN=$(date -u -d "2026-11-12 04:30:00" +%s)
+          HRS=$(( (NOW - OPEN) / 3600 ))
+          if [ "$HRS" -ge 20 ]; then
+            MSG="🚨 LAST CALL — IISM payment. If you got a seat on 12 Nov, the payment link emailed to jaganslar@gmail.com expires around now (~24h). An unpaid seat is released. PAY IT NOW. Check spam too."
+          else
+            MSG="💳 IISM payment check (~${HRS}h since booking opened). If you submitted, the payment link is in jaganslar@gmail.com — ₹20,000, ~24h window, unpaid seats get released. Check spam/promotions if you don't see it."
+          fi
+          curl -sS -X POST "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendMessage" \
+            --data-urlencode "chat_id=${TELEGRAM_CHAT_ID}" \
+            --data-urlencode "text=${MSG}" \
+            -o /dev/null -w "telegram: HTTP %{http_code}\n"
