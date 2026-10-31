@@ -51,6 +51,29 @@ REQUIRED_IDS = [
 ]
 
 
+# Fields that exist but the autofill deliberately leaves blank (all optional,
+# and verified not applicable: parent/guardian = under-18, skiing certificate =
+# Intermediate/Advance, domicile + employment proof not required).
+KNOWN_OPTIONAL_IDS = [
+    "txtDomicile", "txtMedicalCategory", "txtAvailableSeat", "txtCourseFee",
+    "FupDomicileAttachProof", "FupAnyAdventureCoursePhoto",
+    "FupCurrentEmployment", "FupParentGuardianSignature",
+]
+
+
+def form_control_ids(raw: str) -> list[str]:
+    """Every input/select id on the page, so we can spot NEW fields."""
+    ids = []
+    for m in re.finditer(r'<(input|select)\b[^>]*>', raw, re.I):
+        tag = m.group(0)
+        if re.search(r'type="(hidden|submit|button|image|reset)"', tag, re.I):
+            continue
+        i = re.search(r'\bid="([^"]+)"', tag)
+        if i:
+            ids.append(i.group(1))
+    return sorted(set(ids))
+
+
 def is_snow(text: str) -> bool:
     t = re.sub(r"\s+", " ", text).strip().lower()
     if "water" in t:
@@ -123,13 +146,23 @@ def main() -> int:
     if missing:
         problems.append(f"{len(missing)} form field(s) MISSING: {', '.join(missing)}")
 
+    # --- 1b. NEW fields ---
+    # A field we do not know about is the one risk a read-back verification
+    # cannot see: the form would verify "clean" while a new required box sits
+    # empty. Surface it so the autofill can be taught about it before 12 Nov.
+    known = set(REQUIRED_IDS) | set(KNOWN_OPTIONAL_IDS)
+    present = form_control_ids(raw)
+    unknown = [i for i in present if i not in known]
+    if unknown:
+        problems.append(f"{len(unknown)} NEW form field(s) appeared: {', '.join(unknown)}")
+
     # --- 2. go-live ---
     opts = course_options(raw)
     real = [o for o in opts if o and not o.lower().startswith("select")]
     snow = [o for o in real if is_snow(o)]
 
     print(f"[{now}] fields ok={len(REQUIRED_IDS)-len(missing)}/{len(REQUIRED_IDS)}  "
-          f"courses={real}  snow={snow}")
+          f"unknown={len(unknown)}  courses={real}  snow={snow}")
 
     if snow and not state.get("golive_alerted"):
         msg = ("⛷️⚠️ IISM BOOKING IS LIVE RIGHT NOW — the snow-ski course "
