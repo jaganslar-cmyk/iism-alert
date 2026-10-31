@@ -1,0 +1,44 @@
+name: IISM form canary
+
+on:
+  schedule:
+    # Tight cadence into 12 Nov 2026. GitHub throttles scheduled runs, so treat
+    # this as "roughly every 20-60 min" - it is a safety net, not the primary
+    # mechanism. The primary on the day is the local pounce (fill_ego.sh
+    # --pounce), which polls every 2s and fills instantly.
+    - cron: "*/20 * * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: iism-canary
+  cancel-in-progress: false
+
+jobs:
+  canary:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install -r requirements.txt
+
+      - name: Check form structure + booking go-live
+        env:
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+        run: python canary.py
+
+      - name: Persist canary state
+        if: always()
+        run: |
+          if ! git diff --quiet -- canary_state.json 2>/dev/null; then
+            git config user.name "iism-watch-bot"
+            git config user.email "bot@users.noreply.github.com"
+            git add canary_state.json
+            git commit -m "canary: state update"
+            git push
+          fi

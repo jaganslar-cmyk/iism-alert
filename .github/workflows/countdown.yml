@@ -1,0 +1,33 @@
+name: IISM booking countdown
+
+on:
+  schedule:
+    # Booking opens 12 Nov 2026 10:00 IST = 04:30 UTC.
+    - cron: "30 4 9 11 *"    # T-3 days
+    - cron: "30 4 11 11 *"   # T-1 day
+    - cron: "30 3 12 11 *"   # T-1 hour  (09:30 IST)
+    - cron: "10 4 12 11 *"   # T-20 min  (09:50 IST)
+  workflow_dispatch:
+
+jobs:
+  remind:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Send countdown ping
+        env:
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+        run: |
+          NOW=$(date -u +%s)
+          OPEN=$(date -u -d "2026-11-12 04:30:00" +%s)
+          MINS=$(( (OPEN - NOW) / 60 ))
+          if   [ "$MINS" -le 0 ];    then MSG="⛷️ IISM BOOKING IS OPEN NOW (12 Nov, 10:00 IST). GO."
+          elif [ "$MINS" -le 30 ];   then MSG="🚨 T-${MINS} MINUTES to IISM booking. Start the pouncer NOW:  sh ~/iism/fill_ego.sh --pounce"
+          elif [ "$MINS" -le 90 ];   then MSG="⏰ T-1 hour to IISM booking (12 Nov, 10:00 IST). Be at the Mac. ego lite open. Card ready for ₹20,000."
+          elif [ "$MINS" -le 1500 ]; then MSG="📅 IISM booking opens TOMORROW, 12 Nov at 10:00 IST. Batch 1 (20 Dec – 2 Jan). Do a practice run today:  sh ~/iism/fill_ego.sh --rehearse"
+          else MSG="📅 IISM Gulmarg booking opens in 3 days — 12 Nov, 10:00 IST. Batch 1 (20 Dec – 2 Jan), fee ₹20,000. Everything is prepped; do a rehearsal if you want to see it work."
+          fi
+          curl -sS -X POST "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendMessage" \
+            --data-urlencode "chat_id=${TELEGRAM_CHAT_ID}" \
+            --data-urlencode "text=${MSG}" \
+            -o /dev/null -w "telegram: HTTP %{http_code}\n"
