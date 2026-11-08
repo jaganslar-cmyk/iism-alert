@@ -35,10 +35,18 @@ jobs:
       - name: Persist canary state
         if: always()
         run: |
-          if ! git diff --quiet -- canary_state.json 2>/dev/null; then
-            git config user.name "iism-watch-bot"
-            git config user.email "bot@users.noreply.github.com"
-            git add canary_state.json
+          # `git diff` ignores untracked files, so the original check reported
+          # "no change" on a state file that had never been committed - dedup
+          # state was therefore never persisted and one-time alerts re-sent on
+          # every run. Stage first, then compare the index.
+          [ -f canary_state.json ] || exit 0
+          git config user.name "iism-watch-bot"
+          git config user.email "bot@users.noreply.github.com"
+          git add -- canary_state.json
+          if git diff --cached --quiet -- canary_state.json; then
+            echo "canary state unchanged"
+          else
             git commit -m "canary: state update"
+            git pull --rebase --autostash || true
             git push
           fi

@@ -24,7 +24,7 @@ import json
 import os
 import re
 import sys
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 import requests
@@ -34,6 +34,11 @@ STATE_FILE = HERE / "canary_state.json"
 MOBILE = os.environ.get("IISM_MOBILE", "8618870632")
 FORM_URL = f"https://admission.iismgulmarg.in/admission_form.aspx?mobile={MOBILE}"
 TIMEOUT = 30
+# Booking go-live. A snow course merely APPEARING in #ddlCourse is not booking
+# being open: verified 2026-11-08, the courses were listed four days early while
+# the schedule dropdown behind them stayed empty. Only treat it as "GO" from the
+# published time onward; before that it is information, not an alarm.
+OPEN_AT = datetime(2026, 11, 12, 10, 0, 0, tzinfo=timezone(timedelta(hours=5, minutes=30)))
 UA = ("Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 "
       "(KHTML, like Gecko) Chrome/125.0 Safari/537.36")
 
@@ -164,12 +169,27 @@ def main() -> int:
     print(f"[{now}] fields ok={len(REQUIRED_IDS)-len(missing)}/{len(REQUIRED_IDS)}  "
           f"unknown={len(unknown)}  courses={real}  snow={snow}")
 
-    if snow and not state.get("golive_alerted"):
-        msg = ("⛷️⚠️ IISM BOOKING IS LIVE RIGHT NOW — the snow-ski course "
+    before_open = datetime.now(timezone.utc) < OPEN_AT
+    if snow and before_open and not state.get("listed_early_alerted"):
+        msg = ("\u2139\ufe0f IISM: the snow-ski courses are now LISTED in the admission "
+               "dropdown, ahead of booking.\n\n"
+               f"Listed: {', '.join(snow)}\n\n"
+               "This is NOT booking being open - the schedule/batch dropdown behind them "
+               "is still empty. Booking opens 12 Nov 2026, 10:00 IST and the pouncer is "
+               "armed for it. No action needed.")
+        print(f"[{now}] LISTED EARLY (not open): {snow}")
+        if not dry:
+            send_telegram(msg)
+            state["listed_early_alerted"] = now
+            state["listed_early_courses"] = snow
+            STATE_FILE.write_text(json.dumps(state, indent=2))
+    elif snow and not before_open and not state.get("golive_alerted"):
+        msg = ("⛷️⚠️ IISM BOOKING WINDOW IS OPEN — the snow-ski course "
                "is in the admission dropdown.\n\n"
                f"Listed: {', '.join(snow)}\n\n"
-               "GO. Run:  sh ~/iism/fill_ego.sh\n"
-               "(or --pounce if it is not already running)")
+               "The local pouncer should already be filling. If you got no "
+               "'FILLED'/'SUBMITTED' message, GO BY HAND NOW:\n"
+               "  sh ~/iism/fill_ego.sh")
         print(f"[{now}] GO-LIVE: {snow}")
         if not dry:
             send_telegram(msg)
